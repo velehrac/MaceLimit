@@ -73,7 +73,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
         int count = countTotemsInInventory(player);
         if (count >= MAX_TOTEMS) {
             event.setCancelled(true);
-            player.sendMessage("§cNemuzete mit vice nez " + MAX_TOTEMS + " totemy v inventari!");
         }
     }
 
