@@ -1,0 +1,5 @@
+name: MaceLimit
+version: 1.0
+main: cz.maceLimit.MaceLimit
+api-version: '1.21'
+description: Limits mace to 1 per server
