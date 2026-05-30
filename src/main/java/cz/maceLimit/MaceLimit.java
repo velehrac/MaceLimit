@@ -44,14 +44,25 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        if (event.getInventory().getType() != InventoryType.ENDER_CHEST) return;
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        ItemStack item = event.getCursor();
-        if (item == null || item.getType() == Material.AIR) {
-            item = event.getCurrentItem();
+        ItemStack item = null;
+
+        // Hrac kliknul DO ender chestu
+        if (event.getInventory().getType() == InventoryType.ENDER_CHEST
+                && event.getClickedInventory() == event.getInventory()) {
+            item = event.getCursor();
+            if (item == null || item.getType() == Material.AIR) return;
         }
-        if (item == null) return;
+        // Hrac shift-kliknul z inventare do ender chestu
+        else if (event.getInventory().getType() == InventoryType.ENDER_CHEST
+                && event.isShiftClick()
+                && event.getClickedInventory() != event.getInventory()) {
+            item = event.getCurrentItem();
+            if (item == null || item.getType() == Material.AIR) return;
+        } else {
+            return;
+        }
 
         if (item.getType() == Material.MACE || isBlockedAltarItem(item)) {
             event.setCancelled(true);
