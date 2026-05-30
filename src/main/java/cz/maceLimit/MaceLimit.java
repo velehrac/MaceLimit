@@ -44,6 +44,8 @@ public class MaceLimit extends JavaPlugin implements Listener {
         InventoryType.CRAFTING
     );
 
+    private static final int MAX_TOTEMS = 3;
+
     @Override
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -66,17 +68,40 @@ public class MaceLimit extends JavaPlugin implements Listener {
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
+        // --- Kontrola totemu ---
+        // Hrac presouva item DO sveho inventare
+        ItemStack incomingItem = null;
+
+        if (event.isShiftClick()
+                && event.getClickedInventory() != null
+                && event.getClickedInventory().getType() != InventoryType.PLAYER
+                && event.getInventory().getType() == InventoryType.PLAYER) {
+            incomingItem = event.getCurrentItem();
+        } else if (event.getClickedInventory() != null
+                && event.getClickedInventory().getType() == InventoryType.PLAYER
+                && event.getCursor() != null
+                && event.getCursor().getType() == Material.TOTEM_OF_UNDYING) {
+            incomingItem = event.getCursor();
+        }
+
+        if (incomingItem != null && incomingItem.getType() == Material.TOTEM_OF_UNDYING) {
+            int count = countTotemsInInventory(player);
+            if (count >= MAX_TOTEMS) {
+                event.setCancelled(true);
+                player.sendMessage("§cNemuzete mit vice nez " + MAX_TOTEMS + " totemy v inventari!");
+                return;
+            }
+        }
+
+        // --- Blokování copper/mace do kontejnerů ---
         ItemStack item = null;
 
-        // Shift click z inventare do jineho kontejneru
         if (event.isShiftClick()
                 && event.getClickedInventory() != null
                 && event.getClickedInventory().getType() == InventoryType.PLAYER
                 && !ALLOWED_TYPES.contains(event.getInventory().getType())) {
             item = event.getCurrentItem();
-        }
-        // Klik kurzorom do jineho kontejneru
-        else if (event.getClickedInventory() != null
+        } else if (event.getClickedInventory() != null
                 && !ALLOWED_TYPES.contains(event.getClickedInventory().getType())
                 && event.getClickedInventory().getType() != InventoryType.PLAYER) {
             item = event.getCursor();
@@ -95,12 +120,21 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
     }
 
+    private int countTotemsInInventory(Player player) {
+        int count = 0;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.getType() == Material.TOTEM_OF_UNDYING) {
+                count += item.getAmount();
+            }
+        }
+        return count;
+    }
+
     private boolean isBlocked(ItemStack item) {
         if (item == null) return false;
         if (item.getType() == Material.MACE) return true;
         if (isBlockedAltarItem(item)) return true;
 
-        // Zkontroluj shulker
         if (SHULKER_MATERIALS.contains(item.getType())) {
             ItemMeta meta = item.getItemMeta();
             if (meta instanceof BlockStateMeta bsm) {
@@ -114,7 +148,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
             }
         }
 
-        // Zkontroluj bundle
         if (item.getType() == Material.BUNDLE) {
             ItemMeta meta = item.getItemMeta();
             if (meta instanceof BundleMeta bundle) {
