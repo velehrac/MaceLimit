@@ -9,19 +9,19 @@ import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Set;
 
 public class MaceLimit extends JavaPlugin implements Listener {
 
-    private static final Set<Material> BLOCKED_ITEMS = Set.of(
-        Material.MACE,
-        Material.COPPER_HELMET,
-        Material.COPPER_CHESTPLATE,
-        Material.COPPER_LEGGINGS,
-        Material.COPPER_BOOTS,
-        Material.COPPER_PICKAXE
+    private static final Set<String> BLOCKED_NAMES = Set.of(
+        "Copper Helmet",
+        "Copper Chestplate",
+        "Copper Leggings",
+        "Copper Boots",
+        "Copper Pickaxe"
     );
 
     @Override
@@ -34,7 +34,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
     public void onCraft(CraftItemEvent event) {
         ItemStack result = event.getRecipe().getResult();
         if (result.getType() != Material.MACE) return;
-
         if (maceExistsOnServer()) {
             event.setCancelled(true);
             if (event.getWhoClicked() instanceof Player player) {
@@ -54,10 +53,17 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
         if (item == null) return;
 
-        if (BLOCKED_ITEMS.contains(item.getType())) {
+        if (item.getType() == Material.MACE || isBlockedAltarItem(item)) {
             event.setCancelled(true);
             player.sendMessage("§cTuto vec nelze dat do ender chestu!");
         }
+    }
+
+    private boolean isBlockedAltarItem(ItemStack item) {
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return false;
+        String name = org.bukkit.ChatColor.stripColor(meta.getDisplayName());
+        return BLOCKED_NAMES.contains(name);
     }
 
     public boolean maceExistsOnServer() {
