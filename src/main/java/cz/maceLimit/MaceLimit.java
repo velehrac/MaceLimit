@@ -6,6 +6,7 @@ import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
@@ -65,11 +66,22 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     @EventHandler
+    public void onPickup(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player player)) return;
+        if (event.getItem().getItemStack().getType() != Material.TOTEM_OF_UNDYING) return;
+
+        int count = countTotemsInInventory(player);
+        if (count >= MAX_TOTEMS) {
+            event.setCancelled(true);
+            player.sendMessage("§cNemuzete mit vice nez " + MAX_TOTEMS + " totemy v inventari!");
+        }
+    }
+
+    @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
         // --- Kontrola totemu ---
-        // Hrac presouva item DO sveho inventare
         ItemStack incomingItem = null;
 
         if (event.isShiftClick()
