@@ -10,6 +10,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.BundleMeta;
@@ -57,10 +58,29 @@ public class MaceLimit extends JavaPlugin implements Listener {
     public void onCraft(CraftItemEvent event) {
         ItemStack result = event.getRecipe().getResult();
         if (result.getType() != Material.MACE) return;
+
         if (maceExistsOnServer()) {
             event.setCancelled(true);
             if (event.getWhoClicked() instanceof Player player) {
                 player.sendMessage("§cMace uz existuje na serveru! Muze byt jen 1.");
+            }
+            return;
+        }
+
+        // Blokovat shift craft - mohl by vyrobit vice nez 1
+        if (event.isShiftClick()) {
+            event.setCancelled(true);
+            if (event.getWhoClicked() instanceof Player player) {
+                // Dej hracovi jen 1 mace rucne
+                player.getInventory().addItem(new ItemStack(Material.MACE, 1));
+                // Odeber suroviny z crafting table
+                for (int i = 1; i < event.getInventory().getSize(); i++) {
+                    ItemStack item = event.getInventory().getItem(i);
+                    if (item != null && item.getType() != Material.AIR) {
+                        item.setAmount(item.getAmount() - 1);
+                    }
+                }
+                player.sendMessage("§aVycraftil jsi Mace!");
             }
         }
     }
@@ -76,26 +96,50 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
     }
 
+    // Zákaz použití ender pearl
+    @EventHandler
+    public void onEnderPearlUse(PlayerInteractEvent event) {
+        if (event.getItem() == null) return;
+        if (event.getItem().getType() != Material.ENDER_PEARL) return;
+        event.setCancelled(true);
+        event.getPlayer().sendMessage("§cEnder perly jsou na tomto serveru zakazany!");
+    }
+
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
         // --- Kontrola totemu ---
-        ItemStack incomingItem = null;
-
+        // Shift click Z chestu/kontejneru DO inventáře
         if (event.isShiftClick()
                 && event.getClickedInventory() != null
                 && event.getClickedInventory().getType() != InventoryType.PLAYER
+                && event.getCurrentItem() != null
+                && event.getCurrentItem().getType() == Material.TOTEM_OF_UNDYING) {
+            int count = countTotemsInInventory(player);
+            int incoming = event.getCurrentItem().getAmount();
+            if (count + incoming > MAX_TOTEMS) {
+                event.setCancelled(true);
+                player.sendMessage("§cNemuzete mit vice nez " + MAX_TOTEMS + " totemy v inventari!");
+                return;
+            }
+        }
+
+        // Shift click Z inventáře do chestu - hlídat totem
+        if (event.isShiftClick()
+                && event.getClickedInventory() != null
+                && event.getClickedInventory().getType() == InventoryType.PLAYER
+                && event.getCurrentItem() != null
+                && event.getCurrentItem().getType() == Material.TOTEM_OF_UNDYING
                 && event.getInventory().getType() == InventoryType.PLAYER) {
-            incomingItem = event.getCurrentItem();
-        } else if (event.getClickedInventory() != null
+            // Přesun v rámci vlastního inventáře - OK
+        }
+
+        // Kurzorom klik DO inventáře hráče
+        if (event.getClickedInventory() != null
                 && event.getClickedInventory().getType() == InventoryType.PLAYER
                 && event.getCursor() != null
                 && event.getCursor().getType() == Material.TOTEM_OF_UNDYING) {
-            incomingItem = event.getCursor();
-        }
-
-        if (incomingItem != null && incomingItem.getType() == Material.TOTEM_OF_UNDYING) {
             int count = countTotemsInInventory(player);
             if (count >= MAX_TOTEMS) {
                 event.setCancelled(true);
