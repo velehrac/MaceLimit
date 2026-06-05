@@ -28,7 +28,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
     private static final int MAX_TOTEMS = 3;
 
-    // Sledujeme UUID dropped mace item entit abychom poznali kdy jsou zničeny
     private final Set<UUID> trackedMaceItems = new HashSet<>();
 
     private static final Set<Material> SHULKER_MATERIALS = Set.of(
@@ -51,17 +50,23 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
         // Odstranění receptu na Crafter blok
         Bukkit.removeRecipe(new org.bukkit.NamespacedKey("minecraft", "crafter"));
-        getLogger().info("Recept na Crafter blok byl odstranen.");
 
-        // Každou sekundu zkontroluj zda sledované mace UUID stále existují.
-        // Pokud entita zmizela a ItemDespawnEvent ji nezachytil (void, okamžitá smrt
-        // v lávě bez combustion eventu), broadcastujeme zničení.
+        // Odstranění vanilkových receptů na copper armor a tools
+        String[] copperRecipes = {
+            "copper_helmet", "copper_chestplate", "copper_leggings", "copper_boots",
+            "copper_sword", "copper_pickaxe", "copper_axe", "copper_shovel", "copper_hoe"
+        };
+        for (String recipe : copperRecipes) {
+            Bukkit.removeRecipe(new org.bukkit.NamespacedKey("minecraft", recipe));
+        }
+        getLogger().info("Vanilkove recepty na copper veci a Crafter byly odstraneny.");
+
+        // Každou sekundu zkontroluj zda sledované mace UUID stále existují
         Bukkit.getScheduler().runTaskTimer(this, () -> {
             trackedMaceItems.removeIf(uid -> {
                 for (org.bukkit.World world : Bukkit.getWorlds()) {
-                    if (world.getEntity(uid) != null) return false; // stále žije
+                    if (world.getEntity(uid) != null) return false;
                 }
-                // Entita neexistuje → mace zničena
                 Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
                 return true;
             });
@@ -100,18 +105,14 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // PrepareItemCraftEvent — autocrafter blok nesmí nic craftit (výsledek
-    // vždy vymazán). Hráč smí craftit mace pouze pokud ještě neexistuje.
+    // PrepareItemCraftEvent
     // -----------------------------------------------------------------------
     @EventHandler
     public void onPrepareCraft(PrepareItemCraftEvent event) {
-        // Autocrafter blok — viewer není Player → zakázat úplně vše
         if (!(event.getView().getPlayer() instanceof Player)) {
             event.getInventory().setResult(new ItemStack(Material.AIR));
             return;
         }
-
-        // Hráč craftí mace — zakázat pokud mace už existuje
         ItemStack result = event.getInventory().getResult();
         if (result == null || result.getType() != Material.MACE) return;
         if (maceExistsOnServer()) {
@@ -120,7 +121,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // CraftItemEvent — broadcast + blokace shift-stacku
+    // CraftItemEvent
     // -----------------------------------------------------------------------
     @EventHandler
     public void onCraft(CraftItemEvent event) {
@@ -151,7 +152,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // InventoryMoveItemEvent — záloha: autocrafter posílá mace hopperem
+    // InventoryMoveItemEvent
     // -----------------------------------------------------------------------
     @EventHandler
     public void onInventoryMoveItem(InventoryMoveItemEvent event) {
@@ -164,7 +165,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // Sledování dropped mace — zaregistrujeme UUID při spawnu entity
+    // Sledování dropped mace
     // -----------------------------------------------------------------------
     @EventHandler
     public void onItemSpawn(ItemSpawnEvent event) {
@@ -173,7 +174,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
     }
 
-    // Přirozený despawn (5 minut na zemi)
     @EventHandler
     public void onItemDespawn(ItemDespawnEvent event) {
         if (event.getEntity().getItemStack().getType() != Material.MACE) return;
@@ -181,9 +181,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
         Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
     }
 
-    // Mace začíná hořet (lávou, ohněm) — za 1 tick zkontrolujeme zda
-    // item entita stále existuje. Pokud ne, broadcastujeme zničení.
-    // (Lávou item entity okamžitě zmizí bez separátního "death" eventu)
     @EventHandler
     public void onEntityCombust(EntityCombustEvent event) {
         if (!(event.getEntity() instanceof Item itemEntity)) return;
@@ -191,13 +188,9 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
         UUID uid = itemEntity.getUniqueId();
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            // Zkontrolujeme zda entita stále existuje
             boolean stillExists = false;
             for (org.bukkit.World world : Bukkit.getWorlds()) {
-                if (world.getEntity(uid) != null) {
-                    stillExists = true;
-                    break;
-                }
+                if (world.getEntity(uid) != null) { stillExists = true; break; }
             }
             if (!stillExists && trackedMaceItems.remove(uid)) {
                 Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
@@ -206,7 +199,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // onPickup — limit totemů při sbírání ze země
+    // onPickup — limit totemů
     // -----------------------------------------------------------------------
     @EventHandler
     public void onPickup(EntityPickupItemEvent event) {
@@ -334,11 +327,25 @@ public class MaceLimit extends JavaPlugin implements Listener {
         return false;
     }
 
+    // FIX: Používáme Adventure API pro čtení display name místo legacy ChatColor
     private boolean isBlockedAltarItem(ItemStack item) {
         if (item == null) return false;
         ItemMeta meta = item.getItemMeta();
-        if (meta == null || !meta.hasDisplayName()) return false;
-        String name = ChatColor.stripColor(meta.getDisplayName());
-        return BLOCKED_NAMES.contains(name);
+        if (meta == null) return false;
+
+        // Adventure API — plain text bez formátování
+        if (meta.displayName() != null) {
+            String adventureName = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+                    .plainText().serialize(meta.displayName()).trim();
+            if (BLOCKED_NAMES.contains(adventureName)) return true;
+        }
+
+        // Záloha — legacy display name
+        if (meta.hasDisplayName()) {
+            String legacyName = ChatColor.stripColor(meta.getDisplayName()).trim();
+            if (BLOCKED_NAMES.contains(legacyName)) return true;
+        }
+
+        return false;
     }
 }
