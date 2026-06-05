@@ -3,9 +3,9 @@ package cz.maceLimit;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.block.ShulkerBox;
-import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -39,7 +39,10 @@ public class MaceLimit extends JavaPlugin implements Listener {
             "Copper Helmet", "Copper Chestplate", "Copper Leggings", "Copper Boots", "Copper Pickaxe"
     );
 
-    private static final Set<InventoryType> ALLOWED_TYPES = Set.of(InventoryType.CRAFTING);
+    // ALLOWED_TYPES = {PLAYER, CRAFTING} — typy inventáře kde lze klikat bez blokace kontejner-check
+    private static final Set<InventoryType> ALLOWED_TYPES = Set.of(
+            InventoryType.PLAYER, InventoryType.CRAFTING
+    );
 
     @Override
     public void onEnable() {
@@ -48,24 +51,25 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // BUG 2 FIX: maceExistsOnServer nyní kontroluje i dropped items na zemi
+    // maceExistsOnServer — kontroluje inventáře hráčů, ender chesty,
+    // všechny kontejnery ve světě A dropped items na zemi
     // -----------------------------------------------------------------------
     private boolean maceExistsOnServer() {
-        // Kontrola inventářů všech online hráčů
+        // Inventáře online hráčů + ender chesty
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (containsMace(p.getInventory().getContents())) return true;
             if (containsMace(p.getEnderChest().getContents())) return true;
         }
-        // Kontrola všech kontejnerů ve světě (chesty, barely, shulker boxy...)
+        // Kontejnery a dropped items ve světech
         for (org.bukkit.World world : Bukkit.getWorlds()) {
             for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
-                for (org.bukkit.block.BlockState state : chunk.getTileEntities()) {
+                for (BlockState state : chunk.getTileEntities()) {
                     if (state instanceof Container container) {
                         if (containsMace(container.getInventory().getContents())) return true;
                     }
                 }
             }
-            // BUG 2 FIX: kontrola dropped items (entity na zemi)
+            // FIX: kontrola mace ležící na zemi jako dropped item entity
             for (Item entity : world.getEntitiesByClass(Item.class)) {
                 if (entity.getItemStack().getType() == Material.MACE) return true;
             }
@@ -82,31 +86,31 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // Crafting mace — blokuje pokud mace existuje kdekoliv (včetně na zemi)
+    // onCraft — blokuje craftění mace pokud již existuje
+    // Zachytává i shift-click (dal by celý stack → vynutíme 1 kus)
     // -----------------------------------------------------------------------
     @EventHandler
     public void onCraft(CraftItemEvent event) {
         ItemStack result = event.getRecipe().getResult();
         if (result.getType() != Material.MACE) return;
 
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+
         if (maceExistsOnServer()) {
             event.setCancelled(true);
-            Player player = (Player) event.getWhoClicked();
             player.sendMessage(ChatColor.RED + "Mace uz existuje na serveru! Muze byt jen 1.");
             return;
         }
 
-        // Shift-click by dal hráči celý stack — vynutit amount = 1
+        // Shift-click by craftil celý stack — zrušíme event, ručně přidáme 1 kus
         if (event.isShiftClick()) {
             event.setCancelled(true);
-            Player player = (Player) event.getWhoClicked();
-            // Ručně přidat 1 mace a spotřebovat ingredience
             CraftingInventory craftInv = event.getInventory();
+            // Spotřebuj ingredience (slot 0 je výsledek, 1+ jsou ingredience)
             for (int i = 1; i < craftInv.getSize(); i++) {
                 ItemStack ingredient = craftInv.getItem(i);
-                if (ingredient != null) {
+                if (ingredient != null && ingredient.getType() != Material.AIR) {
                     ingredient.setAmount(ingredient.getAmount() - 1);
-                    craftInv.setItem(i, ingredient.getAmount() <= 0 ? null : ingredient);
                 }
             }
             player.getInventory().addItem(new ItemStack(Material.MACE, 1));
@@ -115,17 +119,37 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // Pickup mace ze země
+    // FIX: PrepareItemCraftEvent — zablokuje i auto-craftery
+    // Tento event se spustí PŘED CraftItemEvent, takže ho zachytí dřív
+    // než auto-crafter stihne sebrat výsledek
+    // -----------------------------------------------------------------------
+    @EventHandler
+    public void onPrepareCraft(PrepareItemCraftEvent event) {
+        ItemStack result = event.getInventory().getResult();
+        if (result == null || result.getType() != Material.MACE) return;
+
+        if (maceExistsOnServer()) {
+            // Vymaž výsledek z crafting gridu → auto-crafter nemá co vzít
+            event.getInventory().setResult(new ItemStack(Material.AIR));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // onPickup — kontrola limitu totemů při sbírání ze země
     // -----------------------------------------------------------------------
     @EventHandler
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
-        if (event.getItem().getItemStack().getType() != Material.MACE) return;
-        // Pickup je OK — mace smí být sebrana (je to ta jedna povolená)
+        if (event.getItem().getItemStack().getType() != Material.TOTEM_OF_UNDYING) return;
+
+        int count = countTotemsInInventory(player);
+        if (count >= MAX_TOTEMS) {
+            event.setCancelled(true);
+        }
     }
 
     // -----------------------------------------------------------------------
-    // Ender perly zakázány
+    // onEnderPearlUse — ender perly zakázány
     // -----------------------------------------------------------------------
     @EventHandler
     public void onEnderPearlUse(PlayerInteractEvent event) {
@@ -137,85 +161,93 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // BUG 1 + BUG 3 FIX: Kontrola totemů při klikání v inventáři
+    // onInventoryClick — opravená logika pro totemy
     //
-    // Původní kód kontroloval jen InventoryType.PLAYER → nezachytil přesuny
-    // z chestu (Shift+click, klávesa E). Nyní kontrolujeme všechny akce,
-    // které by mohly přidat totem do hráčova inventáře.
+    // Originální kód měl bug: při shift-clicku Z chestu kontroloval
+    // getClickedInventory().getType() == PLAYER, ale chest vrátí CHEST,
+    // takže podmínka selžela a totem prošel.
+    //
+    // Oprava: kontrolujeme kam totem PŮJDE (do hráčova inventáře),
+    // ne odkud přichází. Spočítáme aktuální počet a zablokujeme pokud >= 3.
     // -----------------------------------------------------------------------
     @EventHandler(priority = EventPriority.HIGH)
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        // --- Kontrola blokovaných předmětů v kontejnerech ---
         ItemStack cursor = event.getCursor();
         ItemStack current = event.getCurrentItem();
 
-        // Zablokování vkládání blokovaných itemů do kontejnerů
+        // --- Blokace vkládání blokovaných itemů do kontejnerů ---
+        // Pokud klikáme DO kontejneru (ne do player/crafting inventáře)
+        // a kurzor drží blokovaný item → zablokovat
         if (event.getClickedInventory() != null
-                && event.getClickedInventory().getType() != InventoryType.PLAYER
-                && event.getClickedInventory().getType() != InventoryType.CRAFTING) {
-            if (cursor != null && isBlocked(cursor)) {
+                && !ALLOWED_TYPES.contains(event.getClickedInventory().getType())) {
+            if (cursor != null && cursor.getType() != Material.AIR && isBlocked(cursor)) {
                 event.setCancelled(true);
                 player.sendMessage(ChatColor.RED + "Tuto vec nelze ulozit do zadneho kontejneru!");
                 return;
             }
         }
 
-        // Zablokování vkládání do shulker boxu / bundlu
-        if (current != null && SHULKER_MATERIALS.contains(current.getType())) {
-            if (cursor != null && isBlockedAltarItem(cursor)) {
-                event.setCancelled(true);
-                player.sendMessage(ChatColor.RED + "Tuto vec nelze ulozit do zadneho kontejneru!");
-                return;
+        // Shift-click z hráčova inventáře DO kontejneru — blokovat blokované itemy
+        if (event.isShiftClick()
+                && event.getClickedInventory() != null
+                && event.getClickedInventory().getType() == InventoryType.PLAYER) {
+            // Cílový inventář je getInventory() (ten druhý)
+            if (!ALLOWED_TYPES.contains(event.getInventory().getType())) {
+                if (current != null && isBlocked(current)) {
+                    event.setCancelled(true);
+                    player.sendMessage(ChatColor.RED + "Tuto vec nelze ulozit do zadneho kontejneru!");
+                    return;
+                }
             }
         }
 
-        // --- BUG 1 + BUG 3 FIX: Kontrola totemů ---
-        // Počítáme, kolik totemů by hráč měl PO akci
-        ItemStack incoming = null;
-
-        InventoryAction action = event.getAction();
-
-        // Akce, které přidají item z externího inventáře (chest, atd.) do hráčova inventáře
-        if (action == InventoryAction.MOVE_TO_OTHER_INVENTORY) {
-            // Shift+click — přesune current item do hráčova inventáře
-            if (event.getClickedInventory() != null
-                    && event.getClickedInventory().getType() != InventoryType.PLAYER) {
-                incoming = current;
-            }
-        } else if (action == InventoryAction.PICKUP_ALL
-                || action == InventoryAction.PICKUP_HALF
-                || action == InventoryAction.PICKUP_ONE
-                || action == InventoryAction.PICKUP_SOME) {
-            // Vzít item do kurzoru — ale jen pokud klikáme mimo hráčův inventář
-            if (event.getClickedInventory() != null
-                    && event.getClickedInventory().getType() != InventoryType.PLAYER) {
-                incoming = current;
-            }
-        } else if (action == InventoryAction.HOTBAR_MOVE_AND_READD
-                || action == InventoryAction.HOTBAR_SWAP) {
-            incoming = current;
-        } else if (action == InventoryAction.PLACE_ALL
-                || action == InventoryAction.PLACE_ONE
-                || action == InventoryAction.PLACE_SOME
-                || action == InventoryAction.SWAP_WITH_CURSOR) {
-            // Pokládáme cursor do hráčova inventáře
-            if (event.getClickedInventory() != null
-                    && event.getClickedInventory().getType() == InventoryType.PLAYER) {
-                incoming = cursor;
-            }
-        }
-
+        // --- Kontrola limitu totemů ---
+        // Zjistíme, jestli by tato akce přidala totem do hráčova inventáře
+        ItemStack incoming = getIncomingToPlayer(event);
         if (incoming == null || incoming.getType() != Material.TOTEM_OF_UNDYING) return;
 
-        // Spočítáme totemy, které hráč aktuálně má
         int currentCount = countTotemsInInventory(player);
+        int incomingAmount = incoming.getAmount();
 
-        if (currentCount >= MAX_TOTEMS) {
+        if (currentCount + incomingAmount > MAX_TOTEMS) {
             event.setCancelled(true);
             player.sendMessage(ChatColor.RED + "Nemuzete mit vice nez " + MAX_TOTEMS + " totemy v inventari!");
         }
+    }
+
+    /**
+     * Vrátí ItemStack který by šel DO hráčova inventáře touto akcí,
+     * nebo null pokud akce nepřidává nic hráči.
+     */
+    private ItemStack getIncomingToPlayer(InventoryClickEvent event) {
+        Inventory clicked = event.getClickedInventory();
+        if (clicked == null) return null;
+
+        boolean clickedIsPlayer = clicked.getType() == InventoryType.PLAYER;
+        boolean clickedIsExternal = !ALLOWED_TYPES.contains(clicked.getType());
+
+        ItemStack cursor = event.getCursor();
+        ItemStack current = event.getCurrentItem();
+
+        // Shift-click z externího inventáře (chest, barrel...) → jde do hráče
+        if (event.isShiftClick() && clickedIsExternal) {
+            return current;
+        }
+
+        // Shift-click z hráčova inventáře → jde DO externího, ne do hráče → ignorovat
+        if (event.isShiftClick() && clickedIsPlayer) {
+            return null;
+        }
+
+        // Normální klik — pokládáme cursor do hráčova inventáře
+        if (!event.isShiftClick() && clickedIsPlayer) {
+            return (cursor != null && cursor.getType() != Material.AIR) ? cursor : null;
+        }
+
+        // Klik do externího inventáře — kurzor jde do chestu, ne do hráče
+        return null;
     }
 
     private int countTotemsInInventory(Player player) {
@@ -230,15 +262,40 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
     private boolean isBlocked(ItemStack item) {
         if (item == null) return false;
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null && meta.hasDisplayName()) {
-            String name = ChatColor.stripColor(meta.getDisplayName());
-            if (BLOCKED_NAMES.contains(name)) return true;
+        // Mace je vždy blokovaná (nelze dávat do kontejnerů)
+        if (item.getType() == Material.MACE) return true;
+        // Blokace altar itemů (copper equipment)
+        if (isBlockedAltarItem(item)) return true;
+        // Blokace uvnitř shulker boxů
+        if (SHULKER_MATERIALS.contains(item.getType())) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta instanceof BlockStateMeta bsm) {
+                if (bsm.getBlockState() instanceof ShulkerBox shulker) {
+                    for (ItemStack content : shulker.getInventory().getContents()) {
+                        if (content != null && content.getType() == Material.MACE) return true;
+                        if (content != null && isBlockedAltarItem(content)) return true;
+                    }
+                }
+            }
+        }
+        // Blokace uvnitř bundlů
+        if (item.getType() == Material.BUNDLE) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta instanceof BundleMeta bundle) {
+                for (ItemStack content : bundle.getItems()) {
+                    if (content != null && content.getType() == Material.MACE) return true;
+                    if (content != null && isBlockedAltarItem(content)) return true;
+                }
+            }
         }
         return false;
     }
 
     private boolean isBlockedAltarItem(ItemStack item) {
-        return isBlocked(item);
+        if (item == null) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return false;
+        String name = ChatColor.stripColor(meta.getDisplayName());
+        return BLOCKED_NAMES.contains(name);
     }
 }
