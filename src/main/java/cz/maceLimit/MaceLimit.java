@@ -49,6 +49,10 @@ public class MaceLimit extends JavaPlugin implements Listener {
         Bukkit.getPluginManager().registerEvents(this, this);
         getLogger().info("MaceLimit enabled");
 
+        // Odstranění receptu na Crafter blok
+        Bukkit.removeRecipe(new org.bukkit.NamespacedKey("minecraft", "crafter"));
+        getLogger().info("Recept na Crafter blok byl odstranen.");
+
         // Každou sekundu zkontroluj zda sledované mace UUID stále existují.
         // Pokud entita zmizela a ItemDespawnEvent ji nezachytil (void, okamžitá smrt
         // v lávě bez combustion eventu), broadcastujeme zničení.
@@ -96,20 +100,20 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // PrepareItemCraftEvent — zakáže craftění mace pokud existuje.
-    // Pro autocrafter blok (viewer není Player) zakáže vždy.
+    // PrepareItemCraftEvent — autocrafter blok nesmí nic craftit (výsledek
+    // vždy vymazán). Hráč smí craftit mace pouze pokud ještě neexistuje.
     // -----------------------------------------------------------------------
     @EventHandler
     public void onPrepareCraft(PrepareItemCraftEvent event) {
-        ItemStack result = event.getInventory().getResult();
-        if (result == null || result.getType() != Material.MACE) return;
-
+        // Autocrafter blok — viewer není Player → zakázat úplně vše
         if (!(event.getView().getPlayer() instanceof Player)) {
-            // Autocrafter blok — vždy zakázat
             event.getInventory().setResult(new ItemStack(Material.AIR));
             return;
         }
 
+        // Hráč craftí mace — zakázat pokud mace už existuje
+        ItemStack result = event.getInventory().getResult();
+        if (result == null || result.getType() != Material.MACE) return;
         if (maceExistsOnServer()) {
             event.getInventory().setResult(new ItemStack(Material.AIR));
         }
