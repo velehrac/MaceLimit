@@ -11,7 +11,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.entity.*;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.*;
@@ -20,11 +20,16 @@ import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 public class MaceLimit extends JavaPlugin implements Listener {
 
     private static final int MAX_TOTEMS = 3;
+
+    // Sledujeme UUID dropped mace item entit abychom poznali kdy jsou zničeny
+    private final Set<UUID> trackedMaceItems = new HashSet<>();
 
     private static final Set<Material> SHULKER_MATERIALS = Set.of(
             Material.SHULKER_BOX, Material.WHITE_SHULKER_BOX, Material.ORANGE_SHULKER_BOX,
@@ -43,10 +48,24 @@ public class MaceLimit extends JavaPlugin implements Listener {
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
         getLogger().info("MaceLimit enabled");
+
+        // Každou sekundu zkontroluj zda sledované mace UUID stále existují.
+        // Pokud entita zmizela a ItemDespawnEvent ji nezachytil (void, okamžitá smrt
+        // v lávě bez combustion eventu), broadcastujeme zničení.
+        Bukkit.getScheduler().runTaskTimer(this, () -> {
+            trackedMaceItems.removeIf(uid -> {
+                for (org.bukkit.World world : Bukkit.getWorlds()) {
+                    if (world.getEntity(uid) != null) return false; // stále žije
+                }
+                // Entita neexistuje → mace zničena
+                Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
+                return true;
+            });
+        }, 20L, 20L);
     }
 
     // -----------------------------------------------------------------------
-    // maceExistsOnServer — hráči, ender chesty, kontejnery, dropped items
+    // maceExistsOnServer
     // -----------------------------------------------------------------------
     private boolean maceExistsOnServer() {
         for (Player p : Bukkit.getOnlinePlayers()) {
@@ -77,28 +96,27 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // PrepareItemCraftEvent — zakáže craftění mace pokud již existuje,
-    // a VŽDY zakáže craftění mace v auto-crafteru (crafter bloku).
+    // PrepareItemCraftEvent — zakáže craftění mace pokud existuje.
+    // Pro autocrafter blok (viewer není Player) zakáže vždy.
     // -----------------------------------------------------------------------
     @EventHandler
     public void onPrepareCraft(PrepareItemCraftEvent event) {
         ItemStack result = event.getInventory().getResult();
         if (result == null || result.getType() != Material.MACE) return;
 
-        // Auto-crafter blok — vždy zakázat, bez ohledu na to zda mace existuje
         if (!(event.getView().getPlayer() instanceof Player)) {
+            // Autocrafter blok — vždy zakázat
             event.getInventory().setResult(new ItemStack(Material.AIR));
             return;
         }
 
-        // Hráč — zakázat pokud mace už existuje
         if (maceExistsOnServer()) {
             event.getInventory().setResult(new ItemStack(Material.AIR));
         }
     }
 
     // -----------------------------------------------------------------------
-    // CraftItemEvent — zpráva pro hráče + broadcast při úspěšném craftu
+    // CraftItemEvent — broadcast + blokace shift-stacku
     // -----------------------------------------------------------------------
     @EventHandler
     public void onCraft(CraftItemEvent event) {
@@ -112,7 +130,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
             return;
         }
 
-        // Shift-click by dal celý stack → vynutit 1 kus
         if (event.isShiftClick()) {
             event.setCancelled(true);
             CraftingInventory craftInv = event.getInventory();
@@ -125,14 +142,12 @@ public class MaceLimit extends JavaPlugin implements Listener {
             player.getInventory().addItem(new ItemStack(Material.MACE, 1));
         }
 
-        // Broadcast — mace vycraftěna
         Bukkit.broadcastMessage(ChatColor.GOLD + "[Mace] Hrac " + ChatColor.WHITE + player.getName()
                 + ChatColor.GOLD + " vycraftil Mace!");
     }
 
     // -----------------------------------------------------------------------
-    // InventoryMoveItemEvent — autocrafter se pokusí přesunout mace hopperem
-    // Zablokujeme a vymažeme.
+    // InventoryMoveItemEvent — záloha: autocrafter posílá mace hopperem
     // -----------------------------------------------------------------------
     @EventHandler
     public void onInventoryMoveItem(InventoryMoveItemEvent event) {
@@ -140,49 +155,50 @@ public class MaceLimit extends JavaPlugin implements Listener {
         if (event.getSource().getType() == InventoryType.CRAFTER) {
             event.setCancelled(true);
             event.getSource().remove(Material.MACE);
-            Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Auto-crafter vycraftil Mace — Mace byla znicena!");
+            Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Autocrafter vycraftil Mace — okamzite znicena.");
         }
     }
 
     // -----------------------------------------------------------------------
-    // PlayerDeathEvent / ItemDespawnEvent — broadcast při zničení mace
-    // Sledujeme dropped itemy: pokud mace zmizí ze světa (despawn),
-    // broadcastujeme zprávu.
+    // Sledování dropped mace — zaregistrujeme UUID při spawnu entity
     // -----------------------------------------------------------------------
     @EventHandler
-    public void onItemDespawn(org.bukkit.event.entity.ItemDespawnEvent event) {
+    public void onItemSpawn(ItemSpawnEvent event) {
         if (event.getEntity().getItemStack().getType() == Material.MACE) {
-            Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena (despawn).");
+            trackedMaceItems.add(event.getEntity().getUniqueId());
         }
     }
 
-    // Mace shozena na zem hráčem — sledujeme přes PlayerDropItemEvent
-    // (samotný drop není zničení, ale pokud ji hráč zahodí do ohně/void atd.)
-    // Zničení v inventáři (lávou, void, smrt) zachytíme přes PlayerDeathEvent.
+    // Přirozený despawn (5 minut na zemi)
     @EventHandler
-    public void onPlayerDeath(org.bukkit.event.entity.PlayerDeathEvent event) {
-        for (ItemStack drop : event.getDrops()) {
-            if (drop != null && drop.getType() == Material.MACE) {
-                // Mace je mezi dropy — nebyla zničena, jen spadla na zem
-                // (broadcast přijde až při případném despawnu)
-                return;
-            }
-        }
-        // Mace nebyla v dropech — buď ji hráč neměl, nebo zmizela (keep inventory?)
-        // Zkontrolujeme zda hráč před smrtí mace měl
-        Player player = event.getEntity();
-        // Inventář je už prázdný při PlayerDeathEvent pokud keepInventory=false,
-        // proto kontrolujeme dropy výše. Pokud keep=true, mace zůstane v inventáři.
+    public void onItemDespawn(ItemDespawnEvent event) {
+        if (event.getEntity().getItemStack().getType() != Material.MACE) return;
+        trackedMaceItems.remove(event.getEntity().getUniqueId());
+        Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
     }
 
-    // Mace zničena ohněm/lávou jako dropped item entity
+    // Mace začíná hořet (lávou, ohněm) — za 1 tick zkontrolujeme zda
+    // item entita stále existuje. Pokud ne, broadcastujeme zničení.
+    // (Lávou item entity okamžitě zmizí bez separátního "death" eventu)
     @EventHandler
-    public void onEntityCombust(org.bukkit.event.entity.EntityCombustEvent event) {
-        if (event.getEntity() instanceof Item itemEntity) {
-            if (itemEntity.getItemStack().getType() == Material.MACE) {
-                Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena (ohen/lava).");
+    public void onEntityCombust(EntityCombustEvent event) {
+        if (!(event.getEntity() instanceof Item itemEntity)) return;
+        if (itemEntity.getItemStack().getType() != Material.MACE) return;
+
+        UUID uid = itemEntity.getUniqueId();
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            // Zkontrolujeme zda entita stále existuje
+            boolean stillExists = false;
+            for (org.bukkit.World world : Bukkit.getWorlds()) {
+                if (world.getEntity(uid) != null) {
+                    stillExists = true;
+                    break;
+                }
             }
-        }
+            if (!stillExists && trackedMaceItems.remove(uid)) {
+                Bukkit.broadcastMessage(ChatColor.RED + "[Mace] Mace byla znicena.");
+            }
+        }, 1L);
     }
 
     // -----------------------------------------------------------------------
@@ -192,15 +208,13 @@ public class MaceLimit extends JavaPlugin implements Listener {
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
         if (event.getItem().getItemStack().getType() != Material.TOTEM_OF_UNDYING) return;
-
-        int count = countTotemsInInventory(player);
-        if (count >= MAX_TOTEMS) {
+        if (countTotemsInInventory(player) >= MAX_TOTEMS) {
             event.setCancelled(true);
         }
     }
 
     // -----------------------------------------------------------------------
-    // onEnderPearlUse — ender perly zakázány
+    // onEnderPearlUse
     // -----------------------------------------------------------------------
     @EventHandler
     public void onEnderPearlUse(PlayerInteractEvent event) {
@@ -212,7 +226,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
     }
 
     // -----------------------------------------------------------------------
-    // onInventoryClick — totemy: pokud hráč má >3, přebytečné vyhodit
+    // onInventoryClick — blokace kontejnerů + enforce totem limitu
     // -----------------------------------------------------------------------
     @EventHandler(priority = EventPriority.HIGH)
     public void onInventoryClick(InventoryClickEvent event) {
@@ -227,7 +241,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
         boolean clickedIsExternal = clickedType != InventoryType.PLAYER
                 && clickedType != InventoryType.CRAFTING;
 
-        // --- Blokace blokovaných itemů do kontejnerů ---
         if (!event.isShiftClick() && clickedIsExternal) {
             if (cursor != null && cursor.getType() != Material.AIR && isBlocked(cursor)) {
                 event.setCancelled(true);
@@ -245,8 +258,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
             }
         }
 
-        // --- Totemy: po akci zkontroluj a vyhoď přebytečné ---
-        // Použijeme scheduledTask aby se spustil PO dokončení události
         Bukkit.getScheduler().runTask(this, () -> enforceTotemLimit(player));
     }
 
@@ -256,10 +267,6 @@ public class MaceLimit extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTask(this, () -> enforceTotemLimit(player));
     }
 
-    /**
-     * Pokud má hráč více než MAX_TOTEMS totemů v inventáři,
-     * přebytečné vyhodí na zem u jeho pozice.
-     */
     private void enforceTotemLimit(Player player) {
         int count = countTotemsInInventory(player);
         if (count <= MAX_TOTEMS) return;
@@ -273,12 +280,10 @@ public class MaceLimit extends JavaPlugin implements Listener {
 
             int amount = item.getAmount();
             if (amount <= toRemove) {
-                // Vyhoď celý stack
                 player.getWorld().dropItemNaturally(player.getLocation(), item.clone());
                 player.getInventory().setItem(i, null);
                 toRemove -= amount;
             } else {
-                // Vyhoď jen část
                 ItemStack drop = item.clone();
                 drop.setAmount(toRemove);
                 player.getWorld().dropItemNaturally(player.getLocation(), drop);
@@ -287,9 +292,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
             }
         }
 
-        if (count - MAX_TOTEMS > 0) {
-            player.sendMessage(ChatColor.YELLOW + "Prebytecne totemy byly vyhozeny z vaseho inventare (limit: " + MAX_TOTEMS + ").");
-        }
+        player.sendMessage(ChatColor.YELLOW + "Prebytecne totemy byly vyhozeny (limit: " + MAX_TOTEMS + ").");
     }
 
     private int countTotemsInInventory(Player player) {
@@ -308,12 +311,10 @@ public class MaceLimit extends JavaPlugin implements Listener {
         if (isBlockedAltarItem(item)) return true;
         if (SHULKER_MATERIALS.contains(item.getType())) {
             ItemMeta meta = item.getItemMeta();
-            if (meta instanceof BlockStateMeta bsm) {
-                if (bsm.getBlockState() instanceof ShulkerBox shulker) {
-                    for (ItemStack content : shulker.getInventory().getContents()) {
-                        if (content != null && (content.getType() == Material.MACE || isBlockedAltarItem(content)))
-                            return true;
-                    }
+            if (meta instanceof BlockStateMeta bsm && bsm.getBlockState() instanceof ShulkerBox shulker) {
+                for (ItemStack content : shulker.getInventory().getContents()) {
+                    if (content != null && (content.getType() == Material.MACE || isBlockedAltarItem(content)))
+                        return true;
                 }
             }
         }
